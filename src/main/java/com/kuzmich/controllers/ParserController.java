@@ -1,6 +1,6 @@
 package com.kuzmich.controllers;
 
-import com.kuzmich.dto.ResponseDto;
+import com.kuzmich.dto.ParsingResult;
 import com.kuzmich.service.ParserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -15,7 +15,7 @@ public class ParserController {
     private final ParserService parserService;
 
     @GetMapping("/reviews/{domain}")
-    public Mono<ResponseDto> getParsingResponse(@PathVariable String domain) {
+    public Mono<ParsingResult> getParsingResponse(@PathVariable String domain) {
         return parserService.parse(domain);
     }
 }

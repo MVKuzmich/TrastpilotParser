@@ -3,7 +3,9 @@ package com.kuzmich.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
-import com.kuzmich.dto.ResponseDto;
+import com.kuzmich.dto.ParsingResult;
+import com.kuzmich.exceptions.DomainNotFoundException;
+import com.kuzmich.exceptions.ErrorResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
@@ -14,7 +16,6 @@ import org.springframework.http.codec.json.Jackson2JsonEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.ExchangeStrategies;
 import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
@@ -29,7 +30,7 @@ public class ParserService {
     private static final String RATING_ATTRIBUTE = "data-rating-typography";
     private static final String REVIEWS_COUNT_CLASS = "typography_body-l__KUYFJ typography_appearance-subtle__8_H2l styles_text__W4hWi";
     private final WebClient client;
-    private final Cache<String, ResponseDto> parsingDataCache = Caffeine.newBuilder()
+    private final Cache<String, ParsingResult> parsingDataCache = Caffeine.newBuilder()
             .expireAfterAccess(Duration.ofDays(1L))
             .maximumSize(10000L)
             .build();
@@ -40,8 +41,8 @@ public class ParserService {
                 .build();
     }
 
-    public Mono<ResponseDto> parse(String domain) {
-        ResponseDto parsingData = parsingDataCache.getIfPresent(domain);
+    public Mono<ParsingResult> parse(String domain) {
+        ParsingResult parsingData = parsingDataCache.getIfPresent(domain);
         return Mono.justOrEmpty(parsingData)
                 .switchIfEmpty(
                         client
@@ -56,23 +57,21 @@ public class ParserService {
                                                     parsingDataCache.put(domain, result);
                                                     log.info("Info {} about Domain {} put in cache", result.toString(), domain);
                                                 });
-                                    } else if (clientResponse.statusCode().is4xxClientError()) {
-                                        log.info("Domain {} is not found", domain);
-                                        return Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND, "Domain is not found"));
                                     } else {
-                                        return Mono.error(new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR.getReasonPhrase()));
+                                        log.info("Domain {} is not found", domain);
+                                        throw new DomainNotFoundException(new ErrorResponse(domain, HttpStatus.NOT_FOUND, "Domain is not found"));
                                     }
                                 })
                 );
 
     }
 
-    private ResponseDto parseHtml(String html) {
+    private ParsingResult parseHtml(String html) {
         Document document = Jsoup.parse(html);
         String rating = document.getElementsByAttribute(RATING_ATTRIBUTE).get(0).text();
         String reviews = document.getElementsByClass(REVIEWS_COUNT_CLASS).get(0).text().replaceAll("[^0-9]", "");
 
-        return new ResponseDto(Integer.parseInt(reviews), Float.parseFloat(rating));
+        return new ParsingResult(Integer.parseInt(reviews), Float.parseFloat(rating));
     }
 
     private void acceptedCodecs(ClientCodecConfigurer clientCodecConfigurer) {
