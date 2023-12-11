@@ -1,29 +1,38 @@
 package com.kuzmich.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.kuzmich.dto.ResponseDto;
-import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
-import org.jsoup.select.Elements;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.codec.ClientCodecConfigurer;
 import org.springframework.http.codec.json.Jackson2JsonDecoder;
 import org.springframework.http.codec.json.Jackson2JsonEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.ExchangeStrategies;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
+
+import java.time.Duration;
 
 import static org.springframework.util.MimeTypeUtils.TEXT_HTML;
 
 @Service
+@Slf4j
 public class ParserService {
 
     private static final String BASE_URL = "https://www.trustpilot.com/review/";
     private static final String RATING_ATTRIBUTE = "data-rating-typography";
     private static final String REVIEWS_COUNT_CLASS = "typography_body-l__KUYFJ typography_appearance-subtle__8_H2l styles_text__W4hWi";
     private final WebClient client;
+    private final Cache<String, ResponseDto> parsingDataCache = Caffeine.newBuilder()
+            .expireAfterAccess(Duration.ofDays(1L))
+            .maximumSize(10000L)
+            .build();
 
     public ParserService(WebClient.Builder webClientBuilder) {
         this.client = webClientBuilder.baseUrl(BASE_URL)
@@ -32,12 +41,30 @@ public class ParserService {
     }
 
     public Mono<ResponseDto> parse(String domain) {
-        return client
-                .get()
-                .uri(domain)
-                .retrieve()
-                .bodyToMono(String.class)
-                .map(this::parseHtml);
+        ResponseDto parsingData = parsingDataCache.getIfPresent(domain);
+        return Mono.justOrEmpty(parsingData)
+                .switchIfEmpty(
+                        client
+                                .get()
+                                .uri(domain)
+                                .exchangeToMono(clientResponse -> {
+                                    log.info("Check response...");
+                                    if (clientResponse.statusCode().is2xxSuccessful()) {
+                                        return clientResponse.bodyToMono(String.class)
+                                                .map(this::parseHtml)
+                                                .doOnNext(result -> {
+                                                    parsingDataCache.put(domain, result);
+                                                    log.info("Info {} about Domain {} put in cache", result.toString(), domain);
+                                                });
+                                    } else if (clientResponse.statusCode().is4xxClientError()) {
+                                        log.info("Domain {} is not found", domain);
+                                        return Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND, "Domain is not found"));
+                                    } else {
+                                        return Mono.error(new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR.getReasonPhrase()));
+                                    }
+                                })
+                );
+
     }
 
     private ResponseDto parseHtml(String html) {
